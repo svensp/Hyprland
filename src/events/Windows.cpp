@@ -198,6 +198,53 @@ void Events::listener_mapWindow(void* owner, void* data) {
             overridingNoMaximize = true;
         } else if (r.szRule == "stayfocused") {
             PWINDOW->m_bStayFocused = true;
+        } else if (r.szRule.find("group") == 0) {
+            if (PWINDOW->m_eGroupRules & GROUP_OVERRIDE)
+                continue;
+
+            // `group` is a shorthand of `group set`
+            if (removeBeginEndSpacesTabs(r.szRule) == "group") {
+                PWINDOW->m_eGroupRules |= GROUP_SET;
+                continue;
+            }
+
+            CVarList    vars(r.szRule, 0, 's');
+            std::string vPrev = "";
+
+            for (auto const& v : vars) {
+                if (v == "group")
+                    continue;
+
+                if (v == "set") {
+                    PWINDOW->m_eGroupRules |= GROUP_SET;
+                } else if (v == "new") {
+                    // shorthand for `group barred set`
+                    PWINDOW->m_eGroupRules |= (GROUP_SET | GROUP_BARRED);
+                } else if (v == "lock") {
+                    PWINDOW->m_eGroupRules |= GROUP_LOCK;
+                } else if (v == "invade") {
+                    PWINDOW->m_eGroupRules |= GROUP_INVADE;
+                } else if (v == "barred") {
+                    PWINDOW->m_eGroupRules |= GROUP_BARRED;
+                } else if (v == "deny") {
+                    PWINDOW->m_sGroupData.deny = true;
+                } else if (v == "override") {
+                    // Clear existing rules
+                    PWINDOW->m_eGroupRules = GROUP_OVERRIDE;
+                } else if (v == "unset") {
+                    // Clear existing rules and stop processing
+                    PWINDOW->m_eGroupRules = GROUP_OVERRIDE;
+                    break;
+                } else if (v == "always") {
+                    if (vPrev == "set" || vPrev == "group")
+                        PWINDOW->m_eGroupRules |= GROUP_SET_ALWAYS;
+                    else if (vPrev == "lock")
+                        PWINDOW->m_eGroupRules |= GROUP_LOCK_ALWAYS;
+                    else
+                        Debug::log(ERR, "windowrule `group` does not support `{} always`", vPrev);
+                }
+                vPrev = v;
+            }
         } else if (r.szRule.find("idleinhibit") == 0) {
             auto IDLERULE = r.szRule.substr(r.szRule.find_first_of(' ') + 1);
 
@@ -406,7 +453,7 @@ void Events::listener_mapWindow(void* owner, void* data) {
         // because the windows are animated on RealSize
         PWINDOW->m_vPseudoSize = PWINDOW->m_vRealSize.goalv();
 
-        g_pCompositor->moveWindowToTop(PWINDOW);
+        g_pCompositor->changeWindowZOrder(PWINDOW, true);
     } else {
         g_pLayoutManager->getCurrentLayout()->onWindowCreated(PWINDOW);
 
@@ -903,7 +950,7 @@ void Events::listener_activateXDG(wl_listener* listener, void* data) {
         return;
 
     if (PWINDOW->m_bIsFloating)
-        g_pCompositor->moveWindowToTop(PWINDOW);
+        g_pCompositor->changeWindowZOrder(PWINDOW, true);
 
     g_pCompositor->focusWindow(PWINDOW);
     g_pCompositor->warpCursorTo(PWINDOW->middle());
@@ -937,7 +984,7 @@ void Events::listener_activateX11(void* owner, void* data) {
         return;
 
     if (PWINDOW->m_bIsFloating)
-        g_pCompositor->moveWindowToTop(PWINDOW);
+        g_pCompositor->changeWindowZOrder(PWINDOW, true);
 
     g_pCompositor->focusWindow(PWINDOW);
     g_pCompositor->warpCursorTo(PWINDOW->middle());
@@ -985,7 +1032,7 @@ void Events::listener_configureX11(void* owner, void* data) {
 
     PWINDOW->m_iWorkspaceID = g_pCompositor->getMonitorFromVector(PWINDOW->m_vRealPosition.vec() + PWINDOW->m_vRealSize.vec() / 2.f)->activeWorkspace;
 
-    g_pCompositor->moveWindowToTop(PWINDOW);
+    g_pCompositor->changeWindowZOrder(PWINDOW, true);
 
     PWINDOW->m_bCreatedOverFullscreen = true;
 
@@ -1042,7 +1089,7 @@ void Events::listener_unmanagedSetGeometry(void* owner, void* data) {
 
         PWINDOW->m_iWorkspaceID = g_pCompositor->getMonitorFromVector(PWINDOW->m_vRealPosition.vec() + PWINDOW->m_vRealSize.vec() / 2.f)->activeWorkspace;
 
-        g_pCompositor->moveWindowToTop(PWINDOW);
+        g_pCompositor->changeWindowZOrder(PWINDOW, true);
         PWINDOW->updateWindowDecos();
         g_pHyprRenderer->damageWindow(PWINDOW);
     }

@@ -243,7 +243,7 @@ void CMonitor::onDisconnect() {
 
     if (!BACKUPMON) {
         Debug::log(WARN, "Unplugged last monitor, entering an unsafe state. Good luck my friend.");
-        g_pCompositor->m_bUnsafeState = true;
+        g_pCompositor->enterUnsafeState();
     }
 
     if (BACKUPMON) {
@@ -616,6 +616,8 @@ void CMonitor::setSpecialWorkspace(CWorkspace* const pWorkspace) {
         g_pInputManager->refocus();
 
     g_pEventManager->postEvent(SHyprIPCEvent{"activespecial", pWorkspace->m_szName + "," + szName});
+
+    g_pHyprRenderer->damageMonitor(this);
 }
 
 void CMonitor::setSpecialWorkspace(const int& id) {

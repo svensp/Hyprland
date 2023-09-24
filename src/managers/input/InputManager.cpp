@@ -189,7 +189,7 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus) {
 
     if (!m_sDrag.drag && !m_lCurrentlyHeldButtons.empty() && g_pCompositor->m_pLastFocus) {
         if (m_bLastFocusOnLS) {
-            foundSurface       = g_pCompositor->m_pLastFocus;
+            foundSurface       = m_pLastMouseSurface;
             pFoundLayerSurface = g_pCompositor->getLayerSurfaceFromSurface(foundSurface);
             if (pFoundLayerSurface) {
                 surfacePos              = g_pCompositor->getLayerSurfaceFromSurface(foundSurface)->position;
@@ -201,10 +201,10 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus) {
                 pFoundLayerSurface = nullptr;
             }
         } else if (g_pCompositor->m_pLastWindow) {
-            foundSurface = g_pCompositor->m_pLastFocus;
+            foundSurface = m_pLastMouseSurface;
             pFoundWindow = g_pCompositor->m_pLastWindow;
 
-            surfacePos = g_pCompositor->m_pLastWindow->m_vRealPosition.vec();
+            surfaceCoords = g_pCompositor->vectorToSurfaceLocal(mouseCoords, pFoundWindow, foundSurface);
 
             m_bFocusHeldByButtons   = true;
             m_bRefocusHeldByButtons = refocus;
@@ -244,17 +244,12 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus) {
             return;
         }
 
-        // only check floating because tiled cant be over fullscreen
-        for (auto& w : g_pCompositor->m_vWindows | std::views::reverse) {
-            wlr_box box = {w->m_vRealPosition.vec().x - BORDER_GRAB_AREA, w->m_vRealPosition.vec().y - BORDER_GRAB_AREA, w->m_vRealSize.vec().x + 2 * BORDER_GRAB_AREA,
-                           w->m_vRealSize.vec().y + 2 * BORDER_GRAB_AREA};
-            if (((w->m_bIsFloating && w->m_bIsMapped && (w->m_bCreatedOverFullscreen || w->m_bPinned)) ||
-                 (g_pCompositor->isWorkspaceSpecial(w->m_iWorkspaceID) && PMONITOR->specialWorkspaceID)) &&
-                wlr_box_contains_point(&box, mouseCoords.x, mouseCoords.y) && g_pCompositor->isWorkspaceVisible(w->m_iWorkspaceID) && !w->isHidden()) {
-                pFoundWindow = w.get();
-                break;
-            }
-        }
+        const auto PWINDOWIDEAL = g_pCompositor->vectorToWindowIdeal(mouseCoords);
+
+        if (PWINDOWIDEAL &&
+            ((PWINDOWIDEAL->m_bIsFloating && PWINDOWIDEAL->m_bCreatedOverFullscreen) /* floating over fullscreen */
+             || (PMONITOR->specialWorkspaceID == PWINDOWIDEAL->m_iWorkspaceID) /* on an open special workspace */))
+            pFoundWindow = PWINDOWIDEAL;
 
         if (!pFoundWindow->m_bIsX11) {
             foundSurface = g_pCompositor->vectorWindowToSurface(mouseCoords, pFoundWindow, surfaceCoords);
@@ -394,14 +389,17 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus) {
                 // enter if change floating style
                 if (FOLLOWMOUSE != 3 && allowKeyboardRefocus)
                     g_pCompositor->focusWindow(pFoundWindow, foundSurface);
+                m_pLastMouseSurface = foundSurface;
                 wlr_seat_pointer_notify_enter(g_pCompositor->m_sSeat.seat, foundSurface, surfaceLocal.x, surfaceLocal.y);
             } else if (FOLLOWMOUSE == 2 || FOLLOWMOUSE == 3) {
+                m_pLastMouseSurface = foundSurface;
                 wlr_seat_pointer_notify_enter(g_pCompositor->m_sSeat.seat, foundSurface, surfaceLocal.x, surfaceLocal.y);
             }
 
             if (pFoundWindow == g_pCompositor->m_pLastWindow) {
                 if (foundSurface != g_pCompositor->m_pLastFocus || m_bLastFocusOnLS) {
                     //      ^^^ changed the subsurface                  ^^^ came back from a LS
+                    m_pLastMouseSurface = foundSurface;
                     wlr_seat_pointer_notify_enter(g_pCompositor->m_sSeat.seat, foundSurface, surfaceLocal.x, surfaceLocal.y);
                 }
             }
@@ -435,6 +433,7 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus) {
             m_bLastFocusOnLS = true;
     }
 
+    m_pLastMouseSurface = foundSurface;
     wlr_seat_pointer_notify_enter(g_pCompositor->m_sSeat.seat, foundSurface, surfaceLocal.x, surfaceLocal.y);
     wlr_seat_pointer_notify_motion(g_pCompositor->m_sSeat.seat, time, surfaceLocal.x, surfaceLocal.y);
 }
@@ -586,7 +585,8 @@ void CInputManager::processMouseDownNormal(wlr_pointer_button_event* e) {
             if (*PFOLLOWMOUSE == 3) // don't refocus on full loose
                 break;
 
-            if (!g_pCompositor->m_sSeat.mouse || !g_pCompositor->m_sSeat.mouse->currentConstraint) {
+            if ((!g_pCompositor->m_sSeat.mouse || !g_pCompositor->m_sSeat.mouse->currentConstraint) /* No constraints */
+                && (w && g_pCompositor->m_pLastWindow != w) /* window should change */) {
                 // a bit hacky
                 // if we only pressed one button, allow us to refocus. m_lCurrentlyHeldButtons.size() > 0 will stick the focus
                 if (m_lCurrentlyHeldButtons.size() == 1) {
@@ -600,7 +600,7 @@ void CInputManager::processMouseDownNormal(wlr_pointer_button_event* e) {
 
             // if clicked on a floating window make it top
             if (g_pCompositor->m_pLastWindow && g_pCompositor->m_pLastWindow->m_bIsFloating)
-                g_pCompositor->moveWindowToTop(g_pCompositor->m_pLastWindow);
+                g_pCompositor->changeWindowZOrder(g_pCompositor->m_pLastWindow, true);
 
             break;
         case WLR_BUTTON_RELEASED: break;
@@ -1591,7 +1591,7 @@ void CInputManager::setCursorIconOnBorder(CWindow* w) {
     wlr_box              box              = {w->m_vRealPosition.vec().x, w->m_vRealPosition.vec().y, w->m_vRealSize.vec().x, w->m_vRealSize.vec().y};
     eBorderIconDirection direction        = BORDERICON_NONE;
     wlr_box              boxFullGrabInput = {box.x - *PEXTENDBORDERGRAB - BORDERSIZE, box.y - *PEXTENDBORDERGRAB - BORDERSIZE, box.width + 2 * (*PEXTENDBORDERGRAB + BORDERSIZE),
-                                             box.height + 2 * (*PEXTENDBORDERGRAB + BORDERSIZE)};
+                                box.height + 2 * (*PEXTENDBORDERGRAB + BORDERSIZE)};
 
     if (!wlr_box_contains_point(&boxFullGrabInput, mouseCoords.x, mouseCoords.y) || (!m_lCurrentlyHeldButtons.empty() && !currentlyDraggedWindow)) {
         direction = BORDERICON_NONE;
